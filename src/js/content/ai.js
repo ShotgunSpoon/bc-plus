@@ -39,6 +39,7 @@ content.ai = (() => {
       nextBulletAttemptAt = 0,
       nextMineAttemptAt = engine.time() + 4,
       nextBoostAttemptAt = engine.time() + 2,
+      nextMachinegunAttemptAt = engine.time() + 2,
       nextTeleportAttemptAt = engine.time() + 3
 
     function randomArenaPoint() {
@@ -331,6 +332,30 @@ content.ai = (() => {
         } else {
           nextBulletAttemptAt = t + 0.25
         }
+      }
+
+      // Machine gun — pop it when a target sits in the forward cone
+      // within spraying range (≤22 m) and we're not already firing. The
+      // game loop handles the actual auto-fire once activated.
+      const mgActive = car.machinegunUntil && t < car.machinegunUntil
+      if (
+        car.inventory.machineguns > 0 &&
+        !mgActive &&
+        t >= nextMachinegunAttemptAt &&
+        content.game.activateMachinegun
+      ) {
+        const fx = Math.cos(car.heading), fy = Math.sin(car.heading)
+        let hasTarget = false
+        for (const other of game.cars) {
+          if (other.id === car.id || other.eliminated) continue
+          const dx = other.position.x - car.position.x,
+            dy = other.position.y - car.position.y
+          const d = Math.hypot(dx, dy)
+          if (d > 22) continue
+          if ((dx * fx + dy * fy) / (d || 1) > 0.5) { hasTarget = true; break }
+        }
+        if (hasTarget) content.game.activateMachinegun(car)
+        nextMachinegunAttemptAt = t + 1.5
       }
 
       // Mines — drop occasionally during pursuit, more often if a

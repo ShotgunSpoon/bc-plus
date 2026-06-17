@@ -82,6 +82,12 @@ content.game = (() => {
   // exactly once per round.
   const DM_WARN_MARKS = [60, 30, 10]
 
+  // Machine-gun power-up: how long a charge lasts, how fast it sprays
+  // (vs the normal 2 s bullet cooldown), and the per-round damage scale.
+  const MACHINEGUN_DURATION = 4.0       // seconds of fire per charge
+  const MACHINEGUN_FIRE_INTERVAL = 0.5  // seconds between auto-fired rounds
+  const MACHINEGUN_DAMAGE_MULT = 0.5    // half damage per round
+
   // Modes that ship with the arcade item layer (pickups, bullets, mines,
   // shields, boosts, teleports). Anything checking "do cars get an
   // inventory / does the picker manager run / can hotkeys fire weapons"
@@ -110,6 +116,7 @@ content.game = (() => {
     'mineHit',
     'mineDetonated',
     'boostActivated',
+    'machinegunActivated',
     'teleportUsed',
     // Deathmatch: respawn after the fixed delay. Networked so every peer
     // hard-snaps the car position, plays the SFX at the new spot, and
@@ -459,6 +466,7 @@ content.game = (() => {
       case 'mine':    if (car.inventory) car.inventory.mines++; break
       case 'speed':   if (car.inventory) car.inventory.boosts++; break
       case 'teleport': if (car.inventory) car.inventory.teleports++; break
+      case 'machinegun': if (car.inventory) car.inventory.machineguns++; break
     }
     // Use `pickupType` rather than `type` — the networked-event capture
     // spreads payload onto `{type: eventName, ...payload}`, so a payload
@@ -573,6 +581,28 @@ content.game = (() => {
     setTimeout(() => {
       if (running && !car.eliminated) {
         content.sounds.boostExpired(car.position)
+      }
+    }, ms)
+  })
+
+  // Machine-gun activation. Mirrors the boost handler: SFX + announce on
+  // every peer, and clients mirror machinegunUntil for HUD/voice. The
+  // actual auto-firing happens in the host update loop.
+  content.events.on('machinegunActivated', ({carId, until}) => {
+    if (!hasItems()) return
+    const car = cars.find((c) => c.id === carId)
+    if (!car) return
+    if (role === 'client') car.machinegunUntil = until
+    content.sounds.machinegunActivated(car.position)
+    if (car === playerCar) {
+      content.announcer.say(app.i18n.t('ann.machinegunUseYou'), 'assertive')
+    } else {
+      content.announcer.say(app.i18n.t('ann.machinegunUseOther', {label: car.label}), 'polite')
+    }
+    const ms = Math.max(0, (until - engine.time()) * 1000)
+    setTimeout(() => {
+      if (running && !car.eliminated) {
+        content.sounds.machinegunExpired(car.position)
       }
     }, ms)
   })
@@ -734,6 +764,25 @@ content.game = (() => {
         } else {
           content.announcer.say(
             t('ann.teleportOther', {label: car.label, count: car.inventory.teleports}),
+            'polite',
+          )
+        }
+        break
+      }
+      case 'machinegun': {
+        // Rare pickup — reuse the bullets acquisition chime (aggressive
+        // sawtooth) so it reads as a weapon grab.
+        content.sounds.pickupBullets(car.position)
+        if (car === playerCar) {
+          content.announcer.say(
+            car.inventory.machineguns === 1
+              ? t('ann.machinegunYou1')
+              : t('ann.machinegunYouN', {count: car.inventory.machineguns}),
+            'assertive',
+          )
+        } else {
+          content.announcer.say(
+            t('ann.machinegunOther', {label: car.label, count: car.inventory.machineguns}),
             'polite',
           )
         }
@@ -1050,6 +1099,8 @@ content.game = (() => {
             minesMgr.place(car)
           } else if (msg.action === 'useBoost') {
             activateBoost(car)
+          } else if (msg.action === 'useMachinegun') {
+            activateMachinegun(car)
           } else if (msg.action === 'useTeleport') {
             activateTeleport(car)
           }
@@ -1101,9 +1152,12 @@ content.game = (() => {
         mi: c.inventory.mines,
         bo: c.inventory.boosts,
         te: c.inventory.teleports,
+        mg: c.inventory.machineguns,
       } : null,
       // Boost end time (engine.time()-domain). 0 / null while idle.
       bu: c.boostUntil || 0,
+      // Machine-gun mode end time (engine.time()-domain).
+      mu: c.machinegunUntil || 0,
     }))
     const snap = {
       type: 'snap',
@@ -1150,8 +1204,10 @@ content.game = (() => {
         car.inventory.mines   = cd.inv.mi
         if (cd.inv.bo != null) car.inventory.boosts = cd.inv.bo
         if (cd.inv.te != null) car.inventory.teleports = cd.inv.te
+        if (cd.inv.mg != null) car.inventory.machineguns = cd.inv.mg
       }
       if (cd.bu != null) car.boostUntil = cd.bu
+      if (cd.mu != null) car.machinegunUntil = cd.mu
     }
 
     // Reconcile item-layer managers with host's authoritative item
@@ -1322,6 +1378,20 @@ content.game = (() => {
     if (pickupsMgr) pickupsMgr.update()
     if (bulletsMgr) bulletsMgr.update(delta)
     if (minesMgr) minesMgr.update()
+
+    // Machine-gun auto-fire: any car currently in machine-gun mode sprays
+    // bullets the normal (auto-aiming center) way for free — no ammo, on a
+    // 0.5 s cadence, at half damage. The bullets manager's per-car cooldown
+    // gate (passed via opts.cooldown) paces the burst, so calling every
+    // frame just fires whenever 0.5 s has elapsed.
+    if (bulletsMgr) {
+      const tnow = engine.time()
+      for (const car of cars) {
+        if (car.eliminated) continue
+        if (!car.machinegunUntil || tnow >= car.machinegunUntil) continue
+        bulletsMgr.fire(car, 'center', {ignoreAmmo: true, cooldown: MACHINEGUN_FIRE_INTERVAL, damageMult: MACHINEGUN_DAMAGE_MULT})
+      }
+    }
 
     // Heartbeat for low health (local player only)
     if (playerCar && !playerCar.eliminated && playerCar.health < 35) {
@@ -1594,6 +1664,7 @@ content.game = (() => {
       inv.mines === 1 ? t('ann.minesPart1') : t('ann.minesPartN', {count: inv.mines}),
       (inv.boosts || 0) === 1 ? t('ann.boostsPart1') : t('ann.boostsPartN', {count: inv.boosts || 0}),
       (inv.teleports || 0) === 1 ? t('ann.teleportsPart1') : t('ann.teleportsPartN', {count: inv.teleports || 0}),
+      (inv.machineguns || 0) === 1 ? t('ann.machinegunsPart1') : t('ann.machinegunsPartN', {count: inv.machineguns || 0}),
     ]
     content.announcer.say(t('ann.inventory', {parts: parts.join(', ')}), 'polite')
   }
@@ -1694,6 +1765,15 @@ content.game = (() => {
     }
     return activateBoost(playerCar)
   }
+  function useMachinegun() {
+    if (!hasItems() || !playerCar || playerCar.eliminated) return false
+    if (role === 'client') {
+      if (!playerCar.inventory || playerCar.inventory.machineguns <= 0) return false
+      try { app.net && app.net.sendToHost && app.net.sendToHost({type: 'action', action: 'useMachinegun'}) } catch (e) {}
+      return true
+    }
+    return activateMachinegun(playerCar)
+  }
   function useTeleport() {
     if (!hasItems() || !playerCar || playerCar.eliminated) return false
     if (role === 'client') {
@@ -1749,6 +1829,17 @@ content.game = (() => {
     car.inventory.boosts--
     car.boostUntil = engine.time() + content.physics.config.boostDuration
     content.events.emit('boostActivated', {carId: car.id, until: car.boostUntil})
+    return true
+  }
+
+  function activateMachinegun(car) {
+    if (!car || car.eliminated) return false
+    if (!car.inventory || car.inventory.machineguns <= 0) return false
+    // Don't let a fresh charge stomp an active window (wasted charge).
+    if (car.machinegunUntil && engine.time() < car.machinegunUntil) return false
+    car.inventory.machineguns--
+    car.machinegunUntil = engine.time() + MACHINEGUN_DURATION
+    content.events.emit('machinegunActivated', {carId: car.id, until: car.machinegunUntil})
     return true
   }
 
@@ -1829,6 +1920,8 @@ content.game = (() => {
     placeMine,
     useBoost,
     activateBoost,
+    useMachinegun,
+    activateMachinegun,
     useTeleport,
     activateTeleport,
     startHonk,

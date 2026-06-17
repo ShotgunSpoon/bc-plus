@@ -106,13 +106,16 @@ app.screen.game = app.screenManager.invent({
       const player = content.game.player()
       if (!player || player.eliminated) return
 
-      if (e.code === 'KeyW') {
+      // Pickup sweep — moved off W (which now fires) onto E.
+      if (e.code === 'KeyE') {
         e.preventDefault()
         content.game.announcePickups()
         return
       }
 
-      if (e.code === 'KeyA' || e.code === 'KeyS' || e.code === 'KeyD') {
+      // Fire a bullet. W / S = straight-ahead auto-aim ("shoot in front");
+      // A / D nudge the aim to the left / right half-space.
+      if (e.code === 'KeyW' || e.code === 'KeyA' || e.code === 'KeyS' || e.code === 'KeyD') {
         const nudge = e.code === 'KeyA' ? 'left' : e.code === 'KeyD' ? 'right' : 'center'
         if (!player.inventory || player.inventory.bullets <= 0) {
           content.announcer.say(app.i18n.t('game.outOfBullets'), 'polite')
@@ -150,6 +153,15 @@ app.screen.game = app.screenManager.invent({
           }
         } else {
           content.announcer.say(app.i18n.t('game.noTeleports'), 'polite')
+        }
+      } else if (e.code === 'KeyJ') {
+        e.preventDefault()
+        if (player.inventory && player.inventory.machineguns > 0) {
+          if (!content.game.useMachinegun()) {
+            content.announcer.say(app.i18n.t('game.machinegunNotReady'), 'polite')
+          }
+        } else {
+          content.announcer.say(app.i18n.t('game.noMachinegun'), 'polite')
         }
       }
     })

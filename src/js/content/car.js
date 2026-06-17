@@ -43,11 +43,18 @@ content.car = (() => {
       ai: null,
       // Arcade-only inventory + a "shield was just consumed this hit"
       // flag the physics path can read.
-      inventory: arcade ? {shields: 0, bullets: 0, mines: 0, boosts: 0, teleports: 0} : null,
+      inventory: arcade ? {shields: 0, bullets: 0, mines: 0, boosts: 0, teleports: 0, machineguns: 0} : null,
       // Set by host via content.game.activateBoost; replicated in
       // snapshots so clients drive their listener voice and HUD off
       // the same value.
       boostUntil: 0,
+      // While engine.time() < machinegunUntil the car is in machine-gun
+      // mode: the game loop auto-fires bullets for it on a fast cadence
+      // without spending inventory. Replicated like boostUntil.
+      machinegunUntil: 0,
+      // Run-up accumulator (0..1) maintained by content.physics.integrate;
+      // sustaining near-cap speed grows it to unlock a higher top speed.
+      momentum: 0,
       hornOffset: Math.round(Math.random() * 100 - 50),
       sound: content.carEngine.create(profileIndex, {
         isSelf: controller === 'player',

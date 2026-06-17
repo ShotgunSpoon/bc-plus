@@ -11,6 +11,7 @@
  *   mine      — subtle clicking; +1 mine
  *   speed     — fast revving whir; +1 speed-burst charge
  *   teleport  — shimmering high-pitched warble; +1 teleport charge
+ *   machinegun— rare; rapid mechanical rattle; +1 machine-gun charge
  *
  * Lifecycle: create() builds the spatial voice. update() repositions the
  * binaural ear in listener-local frame. destroy() tears down the audio
@@ -34,6 +35,8 @@ content.pickups = (() => {
     mine:     {weight: 1, label: 'mine'},
     speed:    {weight: 2, label: 'speed burst'},
     teleport: {weight: 1, label: 'teleport'},
+    // Rare power-pickup: lowest weight in the table (~8% of spawns).
+    machinegun: {weight: 1, label: 'machine gun'},
   }
 
   let nextId = 1
@@ -524,6 +527,91 @@ content.pickups = (() => {
     }
   }
 
+  function createMachinegunVoice(position) {
+    const c = engine.context()
+    const out = c.createGain()
+    out.gain.value = 0
+
+    // Rapid mechanical rattle: a low sawtooth "chug" plus bandpassed
+    // white noise, both chopped by a fast square-ish LFO (~13 Hz) so it
+    // reads as a spun-up rotary gun. Deliberately harsher and faster
+    // than the bullets pickup's slow menacing boing so the two never
+    // get confused by ear.
+    const chug = c.createOscillator()
+    chug.type = 'sawtooth'
+    chug.frequency.value = 150
+
+    const noise = c.createBufferSource()
+    noise.buffer = engine.buffer.whiteNoise({channels: 1, duration: 2})
+    noise.loop = true
+    const bp = c.createBiquadFilter()
+    bp.type = 'bandpass'
+    bp.frequency.value = 1800
+    bp.Q.value = 3
+    const noiseGain = c.createGain()
+    noiseGain.gain.value = 0.5
+    noise.connect(bp).connect(noiseGain)
+
+    // Pre-gate mix.
+    const mix = c.createGain()
+    mix.gain.value = 0.5
+    chug.connect(mix)
+    noiseGain.connect(mix)
+
+    // Fast tremolo chop → the rat-a-tat.
+    const lfo = c.createOscillator()
+    lfo.type = 'square'
+    lfo.frequency.value = 13
+    const lfoShape = c.createGain()
+    lfoShape.gain.value = 0.55
+    const lfoOffset = c.createConstantSource()
+    lfoOffset.offset.value = 0.45
+    lfo.connect(lfoShape)
+
+    const gate = c.createGain()
+    gate.gain.value = 0
+    lfoShape.connect(gate.gain)
+    lfoOffset.connect(gate.gain)
+
+    mix.connect(gate).connect(out)
+
+    const muffle = attachMuffler(c, out, [chug])
+
+    const ear = engine.ear.binaural.create({
+      gainModel: engine.ear.gainModel.exponential.instantiate({
+        maxDistance: 50,
+        power: 3,
+      }),
+    })
+    ear.from(muffle.input)
+    ear.to(engine.mixer.output())
+
+    chug.start()
+    noise.start()
+    lfo.start()
+    lfoOffset.start()
+
+    out.gain.linearRampToValueAtTime(0.15, c.currentTime + 0.3)
+
+    return {
+      ear,
+      applyBehind: muffle.applyBehind,
+      destroy() {
+        const t = engine.time()
+        out.gain.cancelScheduledValues(t)
+        out.gain.linearRampToValueAtTime(0, t + 0.15)
+        setTimeout(() => {
+          try { chug.stop() } catch (e) {}
+          try { noise.stop() } catch (e) {}
+          try { lfo.stop() } catch (e) {}
+          try { lfoOffset.stop() } catch (e) {}
+          try { out.disconnect() } catch (e) {}
+          try { ear.destroy() } catch (e) {}
+        }, 250)
+      },
+    }
+  }
+
   const VOICE_FACTORY = {
     health: createHealthVoice,
     shield: createShieldVoice,
@@ -531,6 +619,7 @@ content.pickups = (() => {
     mine: createMineVoice,
     speed: createSpeedVoice,
     teleport: createTeleportVoice,
+    machinegun: createMachinegunVoice,
   }
 
   // ---- Pickup model ---------------------------------------------------

@@ -20,8 +20,13 @@
  */
 content.bullets = (() => {
   const config = {
-    speed: 14.0,                // m/s
-    maxLifetime: 2.2,           // seconds
+    speed: 17.5,                // m/s launch speed (was 14 — +25%)
+    // Per-second exponential velocity falloff so a bullet leaves the
+    // muzzle fast and visibly slows as it travels (it "runs out of
+    // steam" over distance). Lifetime is stretched a touch to keep the
+    // effective reach close to the old constant-speed range.
+    drag: 0.5,
+    maxLifetime: 2.6,           // seconds
     directHitRadius: 0.25,
     grazeRadius: 0.95,
     directDamage: 30,
@@ -159,16 +164,22 @@ content.bullets = (() => {
   function createManager(game) {
     const bullets = []
 
-    function canFire(owner) {
+    function canFire(owner, cooldown = config.fireCooldown) {
       const t = engine.time()
       const last = lastFiredAt.get(owner) || 0
-      return (t - last) >= config.fireCooldown
+      return (t - last) >= cooldown
     }
 
-    function fire(owner, nudge = 'center') {
+    // opts (machine-gun powerup uses these):
+    //   ignoreAmmo  — don't require/consume an inventory bullet
+    //   cooldown    — override the per-car min seconds between shots
+    //   damageMult  — scale the resolved hit damage (stamped on the bullet)
+    function fire(owner, nudge = 'center', opts = {}) {
       if (!owner || owner.eliminated) return false
-      if (!owner.inventory || owner.inventory.bullets <= 0) return false
-      if (!canFire(owner)) return false
+      const ignoreAmmo = opts.ignoreAmmo === true
+      const cooldown = opts.cooldown != null ? opts.cooldown : config.fireCooldown
+      if (!ignoreAmmo && (!owner.inventory || owner.inventory.bullets <= 0)) return false
+      if (!canFire(owner, cooldown)) return false
 
       // All three shots auto-aim. A/D restrict candidates to the
       // matching half-space (so "shoot right" never picks a left
@@ -189,12 +200,13 @@ content.bullets = (() => {
         targetLabel: target ? target.label : null,
         position: {x: spawnX, y: spawnY},
         velocity: {x: dir.x * config.speed, y: dir.y * config.speed},
+        damageMult: opts.damageMult != null ? opts.damageMult : 1,
         spawnedAt: engine.time(),
         hit: false,
         voice: createBulletVoice(),
       }
       bullets.push(bullet)
-      owner.inventory.bullets--
+      if (!ignoreAmmo) owner.inventory.bullets--
       lastFiredAt.set(owner, engine.time())
       content.events.emit('bulletFired', {
         bulletId: bullet.id,
@@ -217,6 +229,9 @@ content.bullets = (() => {
         )
         damage = engine.fn.lerp(config.grazeDamageMin, config.grazeDamageMax, t)
       }
+
+      // Per-bullet damage scale (machine-gun rounds hit for 50%).
+      damage *= bullet.damageMult != null ? bullet.damageMult : 1
 
       const previousHealth = victim.health
       content.car.applyDamage(victim, damage, aggressor || null)
@@ -242,6 +257,11 @@ content.bullets = (() => {
         // Move
         bullet.position.x += bullet.velocity.x * delta
         bullet.position.y += bullet.velocity.y * delta
+
+        // Decelerate over distance (exponential drag on velocity).
+        const dragK = Math.max(0, 1 - config.drag * delta)
+        bullet.velocity.x *= dragK
+        bullet.velocity.y *= dragK
 
         // Out-of-arena → expire
         const b = content.arena.bounds
@@ -304,10 +324,13 @@ content.bullets = (() => {
       // host from double-stepping. The client passes delta; the host
       // calls without delta from inside update().
       if (delta) {
+        const dragK = Math.max(0, 1 - config.drag * delta)
         for (const bullet of bullets) {
           if (bullet.hit) continue
           bullet.position.x += bullet.velocity.x * delta
           bullet.position.y += bullet.velocity.y * delta
+          bullet.velocity.x *= dragK
+          bullet.velocity.y *= dragK
         }
       }
       if (!player) return

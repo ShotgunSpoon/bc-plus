@@ -869,6 +869,86 @@ content.sounds = (() => {
   }
 
   /**
+   * Activation cue when a car spins up the machine-gun power-up: a quick
+   * mechanical "cock + spin-up" — a rising bandpassed-noise rattle over a
+   * low sawtooth chug. Distinct from the boost whoosh.
+   */
+  function machinegunActivated(position) {
+    const t0 = now()
+    const dur = 0.5
+    const ear = playSpatial(position, () => {
+      const c = ctx()
+      const out = c.createGain()
+      out.gain.value = 0
+
+      // Tremolo gate the sources feed through before reaching out:
+      // trem.gain = 0.5 (constant) + square-LFO*0.5 → chops 0..1.
+      const trem = c.createGain()
+      trem.gain.value = 0.5
+      const lfo = c.createOscillator()
+      lfo.type = 'square'
+      lfo.frequency.setValueAtTime(9, t0)
+      lfo.frequency.linearRampToValueAtTime(16, t0 + dur)
+      const lfoGain = c.createGain()
+      lfoGain.gain.value = 0.5
+      lfo.connect(lfoGain).connect(trem.gain)
+      lfo.start(t0)
+      lfo.stop(t0 + dur + 0.05)
+      trem.connect(out)
+
+      const noise = c.createBufferSource()
+      noise.buffer = engine.buffer.whiteNoise({channels: 1, duration: dur + 0.2})
+      const bp = c.createBiquadFilter()
+      bp.type = 'bandpass'
+      bp.frequency.setValueAtTime(1200, t0)
+      bp.frequency.exponentialRampToValueAtTime(2600, t0 + dur)
+      bp.Q.value = 4
+      noise.connect(bp).connect(trem)
+      noise.start(t0)
+      noise.stop(t0 + dur + 0.05)
+
+      const chug = c.createOscillator()
+      chug.type = 'sawtooth'
+      chug.frequency.setValueAtTime(90, t0)
+      chug.frequency.linearRampToValueAtTime(170, t0 + dur)
+      const chugGain = c.createGain()
+      chugGain.gain.value = 0.4
+      chug.connect(chugGain).connect(trem)
+      chug.start(t0)
+      chug.stop(t0 + dur + 0.05)
+
+      envelope(out.gain, t0, 0.005, 0.05, dur - 0.06, 0.6)
+      return out
+    })
+    disconnectAfter(ear.left, t0 + dur + 0.3, ear)
+  }
+
+  /**
+   * Wind-down when machine-gun mode expires (mirrors boostExpired).
+   */
+  function machinegunExpired(position) {
+    const t0 = now()
+    const dur = 0.3
+    const ear = playSpatial(position, () => {
+      const c = ctx()
+      const out = c.createGain()
+      out.gain.value = 0
+
+      const o = c.createOscillator()
+      o.type = 'sawtooth'
+      o.frequency.setValueAtTime(170, t0)
+      o.frequency.exponentialRampToValueAtTime(70, t0 + dur)
+      o.connect(out)
+      o.start(t0)
+      o.stop(t0 + dur + 0.05)
+
+      envelope(out.gain, t0, 0.005, 0.04, dur - 0.05, 0.3)
+      return out
+    })
+    disconnectAfter(ear.left, t0 + dur + 0.3, ear)
+  }
+
+  /**
    * Shield-blocked impact: short elastic boing instead of damage buzz.
    */
   function shieldBlock(position) {
@@ -971,6 +1051,8 @@ content.sounds = (() => {
     teleport,
     boostActivated,
     boostExpired,
+    machinegunActivated,
+    machinegunExpired,
     bulletDenied,
     shieldBlock,
     explosion,

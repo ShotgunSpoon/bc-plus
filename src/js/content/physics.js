@@ -26,12 +26,25 @@ content.physics = (() => {
     scrapeRate: 0.4,            // hp/s while scraping
     scrapeMinSpeed: 0.6,
     // Speed-burst pickup: while car.boostUntil > engine.time(), the
-    // car uses these instead of the base values. Roughly 2x — fast
-    // enough to clearly out-run an unboosted car and rack up high-impact
-    // rams without trivialising the rest of the round.
-    boostMaxSpeed: 10.0,
-    boostEngineForward: 6.5,
+    // car uses these instead of the base values. ~3x base — a proper
+    // kick that clearly out-runs an unboosted car and turns the next
+    // ram into a big hit. (Bumped up from the old ~2x, which felt weak.)
+    boostMaxSpeed: 15.0,
+    boostEngineForward: 11.0,
     boostDuration: 3.0,         // seconds per boost charge
+    // Momentum / run-up: a car that *sustains* near-top speed under
+    // throttle earns a growing bonus to both engine force and the soft
+    // speed cap, so holding a line builds beyond the base set speed and
+    // ramps back down when you let off / slow down. A car with no
+    // momentum just uses the plain set speeds. Engine force and cap are
+    // scaled together so the drag-terminal speed actually rises to meet
+    // the higher cap (raising the cap alone does nothing — drag holds
+    // you at engineForward/linearDrag).
+    momentumBuildRate: 0.4,     // momentum units/s while sustaining (≈2.5s to full)
+    momentumDecayRate: 0.7,     // momentum units/s while not sustaining
+    momentumThreshold: 0.85,    // build only when speed ≥ this fraction of the active cap
+    momentumForceBonus: 0.5,    // +50% engine force at full momentum
+    momentumSpeedBonus: 2.5,    // +2.5 m/s soft cap at full momentum
   }
 
   function integrate(car, delta) {
@@ -52,10 +65,26 @@ content.physics = (() => {
     // the snapshot. While active, both peak speed and forward thrust
     // are scaled up so the boosted car can out-run and ram harder.
     const boosted = car.boostUntil != null && engine.time() < car.boostUntil
-    const engineFwd = boosted ? config.boostEngineForward : config.engineForward
-    const maxSpd = boosted ? config.boostMaxSpeed : config.maxSpeed
+    const baseEngineFwd = boosted ? config.boostEngineForward : config.engineForward
+    const baseMaxSpd = boosted ? config.boostMaxSpeed : config.maxSpeed
 
-    // Engine force along heading
+    // Momentum / run-up. Measure the car's speed coming into this frame
+    // and grow `car.momentum` (0..1) while it sustains near-cap speed
+    // under forward throttle, decaying it otherwise. The bonus scales
+    // engine force and the soft cap together so the achievable top speed
+    // genuinely climbs past the base set speed when momentum exists.
+    if (car.momentum == null) car.momentum = 0
+    const speedIn = Math.hypot(car.velocity.x, car.velocity.y)
+    const sustaining = throttle > 0.1 && speedIn >= baseMaxSpd * config.momentumThreshold
+    car.momentum = engine.fn.clamp(
+      car.momentum + (sustaining ? config.momentumBuildRate : -config.momentumDecayRate) * delta,
+      0, 1,
+    )
+    const engineFwd = baseEngineFwd * (1 + car.momentum * config.momentumForceBonus)
+    const maxSpd = baseMaxSpd + car.momentum * config.momentumSpeedBonus
+
+    // Engine force along heading (momentum bonus applies to forward drive
+    // only — reversing doesn't build or spend a run-up).
     const forwardPower = throttle >= 0
       ? engineFwd * throttle
       : config.engineReverse * throttle
